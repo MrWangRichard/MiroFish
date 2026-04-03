@@ -1,22 +1,57 @@
-<template>
+﻿<template>
   <div class="graph-panel">
     <div class="panel-header">
-      <span class="panel-title">Graph Relationship Visualization</span>
-      <!-- 顶部工具栏 (Internal Top Right) -->
-      <div class="header-tools">
-        <button class="tool-btn" @click="$emit('refresh')" :disabled="loading" title="刷新图谱">
-          <span class="icon-refresh" :class="{ 'spinning': loading }">↻</span>
-          <span class="btn-text">Refresh</span>
-        </button>
-        <button class="tool-btn" @click="$emit('toggle-maximize')" title="最大化/还原">
-          <span class="icon-maximize">⛶</span>
-        </button>
+      <div class="header-primary">
+        <span class="panel-title">Graph Relationship Visualization</span>
+        <span v-if="currentGraphData" class="panel-subtitle">{{ graphSummaryText }}</span>
       </div>
+      <div class="header-controls">
+        <div class="entity-controls">
+          <select
+            v-model="selectedEntityUuid"
+            class="entity-select"
+            :disabled="!graphId || entitySearchLoading || focusLoading"
+            @change="handleEntitySelect"
+          >
+            <option value="">Select entity</option>
+            <option v-for="entity in entityOptions" :key="entity.uuid" :value="entity.uuid">
+              {{ formatEntityOption(entity) }}
+            </option>
+          </select>
+          <input
+            v-model="entitySearchInput"
+            class="entity-search-input"
+            type="text"
+            placeholder="Search entity by id or name"
+            :disabled="!graphId || focusLoading"
+            @keydown.enter.prevent="handleSearch"
+          />
+          <button class="tool-btn compact" @click="handleSearch" :disabled="!graphId || focusLoading" title="搜索实体">
+            <span>{{ focusLoading ? '...' : 'Search' }}</span>
+          </button>
+          <button class="tool-btn ghost" @click="resetToDefaultView" :disabled="!props.graphData || focusLoading" title="恢复默认视图">
+            <span>Reset</span>
+          </button>
+        </div>
+        <div class="header-tools">
+          <button class="tool-btn" @click="$emit('refresh')" :disabled="isPanelLoading" title="刷新图谱">
+            <span class="icon-refresh" :class="{ 'spinning': isPanelLoading }">?</span>
+            <span class="btn-text">Refresh</span>
+          </button>
+          <button class="tool-btn" @click="$emit('toggle-maximize')" title="最大化/还原">
+            <span class="icon-maximize">?</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="controlMessage" class="search-status">
+      {{ controlMessage }}
     </div>
     
     <div class="graph-container" ref="graphContainer">
       <!-- 图谱可视化 -->
-      <div v-if="graphData" class="graph-view">
+      <div v-if="currentGraphData" class="graph-view">
         <svg ref="graphSvg" class="graph-svg"></svg>
         
         <!-- 构建中/模拟中提示 -->
@@ -72,6 +107,32 @@
               <span class="detail-label">Created:</span>
               <span class="detail-value">{{ formatDateTime(selectedItem.data.created_at) }}</span>
             </div>
+            <div class="detail-row" v-if="typeof selectedItem.data.degree === 'number'">
+              <span class="detail-label">Connections:</span>
+              <span class="detail-value">
+                {{ selectedItem.data.visible_degree ?? 0 }}/{{ selectedItem.data.degree }} shown
+              </span>
+            </div>
+            <div class="detail-row" v-if="typeof selectedItem.data.distance === 'number'">
+              <span class="detail-label">Distance:</span>
+              <span class="detail-value">{{ selectedItem.data.distance }} hop{{ selectedItem.data.distance === 1 ? '' : 's' }}</span>
+            </div>
+
+            <div class="detail-actions">
+              <button
+                class="detail-action-btn"
+                :disabled="!canExpandSelectedNode || focusLoading"
+                @click="expandSelectedNode"
+              >
+                {{ focusLoading ? '...' : 'Expand 1 Hop' }}
+              </button>
+              <span v-if="expandedAnchorLabel" class="detail-action-context">
+                Anchor: {{ expandedAnchorLabel }}
+              </span>
+              <span v-if="selectedItem.data.has_more_neighbors === false" class="detail-action-hint">
+                No more unseen neighbors
+              </span>
+            </div>
             
             <!-- Properties -->
             <div class="detail-section" v-if="selectedItem.data.attributes && Object.keys(selectedItem.data.attributes).length > 0">
@@ -123,7 +184,7 @@
                   >
                     <span class="self-loop-index">#{{ idx + 1 }}</span>
                     <span class="self-loop-name">{{ loop.name || loop.fact_type || 'RELATED' }}</span>
-                    <span class="self-loop-toggle">{{ expandedSelfLoops.has(loop.uuid || idx) ? '−' : '+' }}</span>
+                    <span class="self-loop-toggle">{{ expandedSelfLoops.has(loop.uuid || idx) ? '?' : '+' }}</span>
                   </div>
                   
                   <div class="self-loop-item-content" v-show="expandedSelfLoops.has(loop.uuid || idx)">
@@ -201,20 +262,20 @@
       </div>
       
       <!-- 加载状态 -->
-      <div v-else-if="loading" class="graph-state">
+      <div v-else-if="isPanelLoading" class="graph-state">
         <div class="loading-spinner"></div>
         <p>图谱数据加载中...</p>
       </div>
       
       <!-- 等待/空状态 -->
       <div v-else class="graph-state">
-        <div class="empty-icon">❖</div>
+        <div class="empty-icon">?</div>
         <p class="empty-text">等待本体生成...</p>
       </div>
     </div>
 
     <!-- 底部图例 (Bottom Left) -->
-    <div v-if="graphData && entityTypes.length" class="graph-legend">
+    <div v-if="currentGraphData && entityTypes.length" class="graph-legend">
       <span class="legend-title">Entity Types</span>
       <div class="legend-items">
         <div class="legend-item" v-for="type in entityTypes" :key="type.name">
@@ -225,7 +286,7 @@
     </div>
     
     <!-- 显示边标签开关 -->
-    <div v-if="graphData" class="edge-labels-toggle">
+    <div v-if="currentGraphData" class="edge-labels-toggle">
       <label class="toggle-switch">
         <input type="checkbox" v-model="showEdgeLabels" />
         <span class="slider"></span>
@@ -238,8 +299,18 @@
 <script setup>
 import { ref, onMounted, onUnmounted, watch, nextTick, computed } from 'vue'
 import * as d3 from 'd3'
+import { getExpandedGraphData, getGraphEntities, getFocusedGraphData } from '../api/graph'
+
+const DEFAULT_ENTITY_LIMIT = 100
+const ENTITY_SEARCH_LIMIT = 20
+const ENTITY_SEARCH_DEBOUNCE_MS = 300
+const DEFAULT_FOCUS_HOPS = 1
+const DEFAULT_EXPAND_HOPS = 1
+const GRAPH_PER_HOP_LIMIT = 20
+const GRAPH_TOTAL_NODE_LIMIT = 150
 
 const props = defineProps({
+  graphId: String,
   graphData: Object,
   loading: Boolean,
   currentPhase: Number,
@@ -255,6 +326,58 @@ const showEdgeLabels = ref(true) // 默认显示边标签
 const expandedSelfLoops = ref(new Set()) // 展开的自环项
 const showSimulationFinishedHint = ref(false) // 模拟结束后的提示
 const wasSimulating = ref(false) // 追踪之前是否在模拟中
+const displayGraphData = ref(null)
+const entityOptions = ref([])
+const selectedEntityUuid = ref('')
+const entitySearchInput = ref('')
+const entitySearchLoading = ref(false)
+const focusLoading = ref(false)
+const controlMessage = ref('')
+const expandedAnchorUuid = ref('')
+let entitySearchTimer = null
+let currentZoomTransform = d3.zoomIdentity
+let zoomBehaviorRef = null
+let pendingExpandedNodeIds = new Set()
+let pendingAnchorVisibilityUuid = ''
+const nodePositionCache = new Map()
+
+const currentGraphData = computed(() => displayGraphData.value || props.graphData || null)
+const isPanelLoading = computed(() => props.loading || focusLoading.value)
+const expandedAnchorLabel = computed(() => {
+  if (!expandedAnchorUuid.value) return ''
+  const anchorNode = (currentGraphData.value?.nodes || []).find(node => node.uuid === expandedAnchorUuid.value)
+  return anchorNode?.name || expandedAnchorUuid.value
+})
+
+const graphSummaryText = computed(() => {
+  if (!currentGraphData.value) return ''
+
+  const totalNodes = currentGraphData.value.node_count || 0
+  const totalEdges = currentGraphData.value.edge_count || 0
+  const displayNodes = currentGraphData.value.display_node_count || currentGraphData.value.nodes?.length || 0
+  const displayEdges = currentGraphData.value.display_edge_count || currentGraphData.value.edges?.length || 0
+  const viewMode = currentGraphData.value.view_mode || 'full'
+
+  if (viewMode.startsWith('focus')) {
+    return `Focused neighborhood · ${displayNodes}/${totalNodes} nodes · ${displayEdges}/${totalEdges} edges`
+  }
+
+  if (viewMode.startsWith('expand')) {
+    return `Expanded neighborhood · ${displayNodes}/${totalNodes} nodes · ${displayEdges}/${totalEdges} edges`
+  }
+
+  if (viewMode === 'default') {
+    return `Default view · ${displayNodes}/${totalNodes} nodes · ${displayEdges}/${totalEdges} edges`
+  }
+
+  return `${totalNodes} nodes · ${totalEdges} edges`
+})
+
+const canExpandSelectedNode = computed(() => {
+  if (!selectedItem.value || selectedItem.value.type !== 'node') return false
+  if (!props.graphId || !currentGraphData.value) return false
+  return selectedItem.value.data?.has_more_neighbors !== false
+})
 
 // 关闭模拟结束提示
 const dismissFinishedHint = () => {
@@ -281,14 +404,352 @@ const toggleSelfLoop = (id) => {
   expandedSelfLoops.value = newSet
 }
 
+const getNodeEntityType = (node) => {
+  if (!node) return 'Entity'
+  return node.labels?.find(label => label !== 'Entity' && label !== 'Node') || 'Entity'
+}
+
+const getEntityTypeColor = (entityType) => {
+  const matchedType = entityTypes.value.find(item => item.name === entityType)
+  return matchedType?.color || '#999'
+}
+
+const cacheNodePositions = (nodes = []) => {
+  nodes.forEach(node => {
+    if (!node?.id) return
+    if (!Number.isFinite(node.x) || !Number.isFinite(node.y)) return
+    nodePositionCache.set(node.id, { x: node.x, y: node.y })
+  })
+}
+
+const resetGraphViewportState = ({ clearAnchor = false } = {}) => {
+  currentZoomTransform = d3.zoomIdentity
+  zoomBehaviorRef = null
+  pendingExpandedNodeIds = new Set()
+  pendingAnchorVisibilityUuid = ''
+  nodePositionCache.clear()
+  if (clearAnchor) {
+    expandedAnchorUuid.value = ''
+  }
+}
+
+const syncDisplayGraphData = (graphData) => {
+  displayGraphData.value = graphData || null
+  selectedItem.value = null
+  expandedSelfLoops.value = new Set()
+}
+
+const buildEdgeKey = (edge) => {
+  if (!edge) return ''
+  return edge.uuid || [
+    edge.source_node_uuid || '',
+    edge.target_node_uuid || '',
+    edge.name || edge.fact_type || ''
+  ].join('::')
+}
+
+const mergeGraphData = (baseGraphData, deltaGraphData) => {
+  const mergedNodeMap = new Map()
+  const mergedEdgeMap = new Map()
+
+  ;(baseGraphData?.nodes || []).forEach(node => {
+    if (node?.uuid) {
+      mergedNodeMap.set(node.uuid, node)
+    }
+  })
+  ;(deltaGraphData?.nodes || []).forEach(node => {
+    if (node?.uuid) {
+      mergedNodeMap.set(node.uuid, node)
+    }
+  })
+
+  ;(baseGraphData?.edges || []).forEach(edge => {
+    const key = buildEdgeKey(edge)
+    if (key) {
+      mergedEdgeMap.set(key, edge)
+    }
+  })
+  ;(deltaGraphData?.edges || []).forEach(edge => {
+    const key = buildEdgeKey(edge)
+    if (key) {
+      mergedEdgeMap.set(key, edge)
+    }
+  })
+
+  const mergedNodes = Array.from(mergedNodeMap.values())
+  const mergedEdges = Array.from(mergedEdgeMap.values())
+
+  return {
+    ...(baseGraphData || {}),
+    ...(deltaGraphData || {}),
+    nodes: mergedNodes,
+    edges: mergedEdges,
+    display_node_count: mergedNodes.length,
+    display_edge_count: mergedEdges.length,
+    node_count: deltaGraphData?.node_count ?? baseGraphData?.node_count ?? mergedNodes.length,
+    edge_count: deltaGraphData?.edge_count ?? baseGraphData?.edge_count ?? mergedEdges.length,
+    focus_node_uuid: deltaGraphData?.focus_node_uuid ?? baseGraphData?.focus_node_uuid ?? null
+  }
+}
+
+const buildTransform = (transform = d3.zoomIdentity) => (
+  d3.zoomIdentity.translate(transform.x, transform.y).scale(transform.k)
+)
+
+const getNodeInitialPosition = (nodeData, index, totalCount, width, height) => {
+  const cachedPosition = nodePositionCache.get(nodeData.uuid)
+  if (cachedPosition) {
+    return cachedPosition
+  }
+
+  if (nodeData.is_focus) {
+    return { x: width / 2, y: height / 2 }
+  }
+
+  const anchorPosition = expandedAnchorUuid.value
+    ? nodePositionCache.get(expandedAnchorUuid.value)
+    : null
+
+  if (anchorPosition && pendingExpandedNodeIds.has(nodeData.uuid)) {
+    const pendingIds = Array.from(pendingExpandedNodeIds)
+    const pendingIndex = Math.max(0, pendingIds.indexOf(nodeData.uuid))
+    const angle = (pendingIndex / Math.max(pendingIds.length, 1)) * Math.PI * 2
+    const radius = 90 + Math.floor(pendingIndex / 8) * 28
+    return {
+      x: anchorPosition.x + Math.cos(angle) * radius,
+      y: anchorPosition.y + Math.sin(angle) * radius
+    }
+  }
+
+  const angle = (index / Math.max(totalCount, 1)) * Math.PI * 2
+  const radius = Math.min(width, height) * 0.22
+  return {
+    x: width / 2 + Math.cos(angle) * radius,
+    y: height / 2 + Math.sin(angle) * radius
+  }
+}
+
+const keepNodeInView = (nodeDatum) => {
+  if (!zoomBehaviorRef || !graphSvg.value || !graphContainer.value || !nodeDatum) return
+  if (!Number.isFinite(nodeDatum.x) || !Number.isFinite(nodeDatum.y)) return
+
+  const width = graphContainer.value.clientWidth
+  const height = graphContainer.value.clientHeight
+  const margin = 100
+  const k = currentZoomTransform.k
+  const screenX = nodeDatum.x * k + currentZoomTransform.x
+  const screenY = nodeDatum.y * k + currentZoomTransform.y
+
+  let dx = 0
+  let dy = 0
+
+  if (screenX < margin) {
+    dx = margin - screenX
+  } else if (screenX > width - margin) {
+    dx = width - margin - screenX
+  }
+
+  if (screenY < margin) {
+    dy = margin - screenY
+  } else if (screenY > height - margin) {
+    dy = height - margin - screenY
+  }
+
+  if (dx === 0 && dy === 0) return
+
+  const nextTransform = d3.zoomIdentity
+    .translate(currentZoomTransform.x + dx, currentZoomTransform.y + dy)
+    .scale(currentZoomTransform.k)
+
+  d3.select(graphSvg.value)
+    .transition()
+    .duration(250)
+    .call(zoomBehaviorRef.transform, nextTransform)
+}
+
+const formatEntityOption = (entity) => {
+  if (!entity) return ''
+  if (entity.name && entity.uuid && entity.name !== entity.uuid) {
+    return `${entity.name} (${entity.uuid})`
+  }
+  return entity.name || entity.uuid || ''
+}
+
+const loadEntityOptions = async (query = '') => {
+  if (!props.graphId) {
+    entityOptions.value = []
+    return
+  }
+
+  entitySearchLoading.value = true
+  const trimmedQuery = query.trim()
+
+  try {
+    const res = await getGraphEntities(props.graphId, {
+      q: trimmedQuery || undefined,
+      limit: trimmedQuery ? ENTITY_SEARCH_LIMIT : DEFAULT_ENTITY_LIMIT
+    })
+
+    if (res.success) {
+      entityOptions.value = res.data?.entities || []
+      if (trimmedQuery) {
+        controlMessage.value = entityOptions.value.length > 0
+          ? `找到 ${entityOptions.value.length} 个候选实体`
+          : '未找到匹配实体'
+      } else if (!focusLoading.value) {
+        controlMessage.value = ''
+      }
+    } else {
+      controlMessage.value = res.error || '实体候选加载失败'
+    }
+  } catch (err) {
+    controlMessage.value = `实体候选加载失败: ${err.message}`
+  } finally {
+    entitySearchLoading.value = false
+  }
+}
+
+const focusOnEntity = async (entityUuid) => {
+  if (!props.graphId || !entityUuid) return
+
+  focusLoading.value = true
+
+  try {
+    const res = await getFocusedGraphData(props.graphId, {
+      entity_uuid: entityUuid,
+      hops: DEFAULT_FOCUS_HOPS,
+      per_hop_limit: GRAPH_PER_HOP_LIMIT,
+      total_node_limit: GRAPH_TOTAL_NODE_LIMIT
+    })
+
+    if (res.success) {
+      resetGraphViewportState()
+      expandedAnchorUuid.value = entityUuid
+      syncDisplayGraphData(res.data)
+      controlMessage.value = '已切换到实体邻域视图'
+    } else {
+      controlMessage.value = res.error || '实体邻域加载失败'
+    }
+  } catch (err) {
+    controlMessage.value = `实体邻域加载失败: ${err.message}`
+  } finally {
+    focusLoading.value = false
+  }
+}
+
+const expandSelectedNode = async () => {
+  const selectedNode = selectedItem.value?.type === 'node' ? selectedItem.value.data : null
+  if (!props.graphId || !selectedNode?.uuid || !currentGraphData.value) return
+
+  focusLoading.value = true
+
+  try {
+    const excludeNodeUuids = (currentGraphData.value.nodes || [])
+      .map(node => node.uuid)
+      .filter(Boolean)
+      .join(',')
+
+    const res = await getExpandedGraphData(props.graphId, {
+      entity_uuid: selectedNode.uuid,
+      hops: DEFAULT_EXPAND_HOPS,
+      per_hop_limit: GRAPH_PER_HOP_LIMIT,
+      total_node_limit: GRAPH_TOTAL_NODE_LIMIT,
+      exclude_node_uuids: excludeNodeUuids || undefined
+    })
+
+    if (res.success) {
+      expandedAnchorUuid.value = selectedNode.uuid
+      pendingAnchorVisibilityUuid = selectedNode.uuid
+      const mergedGraphData = mergeGraphData(currentGraphData.value, res.data)
+      const previousNodeCount = currentGraphData.value.nodes?.length || 0
+      const previousNodeIds = new Set((currentGraphData.value.nodes || []).map(node => node.uuid).filter(Boolean))
+      pendingExpandedNodeIds = new Set(
+        (mergedGraphData.nodes || [])
+          .map(node => node.uuid)
+          .filter(uuid => uuid && !previousNodeIds.has(uuid))
+      )
+      syncDisplayGraphData(mergedGraphData)
+
+      const refreshedNode = mergedGraphData.nodes.find(node => node.uuid === selectedNode.uuid)
+      if (refreshedNode) {
+        const entityType = getNodeEntityType(refreshedNode)
+        selectedItem.value = {
+          type: 'node',
+          data: refreshedNode,
+          entityType,
+          color: getEntityTypeColor(entityType)
+        }
+      }
+
+      const nextNodeCount = mergedGraphData.nodes?.length || 0
+      controlMessage.value = nextNodeCount > previousNodeCount
+        ? `已从 ${refreshedNode?.name || selectedNode.uuid} 扩展一跳邻域`
+        : '该实体没有更多可扩展的相邻实体'
+    } else {
+      controlMessage.value = res.error || '实体扩展失败'
+    }
+  } catch (err) {
+    controlMessage.value = `实体扩展失败: ${err.message}`
+  } finally {
+    focusLoading.value = false
+  }
+}
+
+const handleSearch = async () => {
+  const query = entitySearchInput.value.trim()
+
+  if (selectedEntityUuid.value) {
+    await focusOnEntity(selectedEntityUuid.value)
+    return
+  }
+
+  if (!query) {
+    controlMessage.value = '请输入实体名称或ID'
+    return
+  }
+
+  await loadEntityOptions(query)
+  const firstMatch = entityOptions.value[0]
+  if (!firstMatch) {
+    controlMessage.value = '未找到匹配实体'
+    return
+  }
+
+  selectedEntityUuid.value = firstMatch.uuid
+  await focusOnEntity(firstMatch.uuid)
+}
+
+const handleEntitySelect = async () => {
+  if (!selectedEntityUuid.value) {
+    resetToDefaultView()
+    return
+  }
+
+  const entity = entityOptions.value.find(item => item.uuid === selectedEntityUuid.value)
+  if (entity) {
+    entitySearchInput.value = entity.name || entity.uuid || ''
+  }
+
+  await focusOnEntity(selectedEntityUuid.value)
+}
+
+const resetToDefaultView = () => {
+  resetGraphViewportState({ clearAnchor: true })
+  syncDisplayGraphData(props.graphData)
+  selectedEntityUuid.value = ''
+  entitySearchInput.value = ''
+  controlMessage.value = ''
+  loadEntityOptions()
+}
+
 // 计算实体类型用于图例
 const entityTypes = computed(() => {
-  if (!props.graphData?.nodes) return []
+  if (!currentGraphData.value?.nodes) return []
   const typeMap = {}
   // 美观的颜色调色板
   const colors = ['#FF6B35', '#004E89', '#7B2D8E', '#1A936F', '#C5283D', '#E9724C', '#3498db', '#9b59b6', '#27ae60', '#f39c12']
   
-  props.graphData.nodes.forEach(node => {
+  currentGraphData.value.nodes.forEach(node => {
     const type = node.labels?.find(l => l !== 'Entity') || 'Entity'
     if (!typeMap[type]) {
       typeMap[type] = { name: type, count: 0, color: colors[Object.keys(typeMap).length % colors.length] }
@@ -326,10 +787,11 @@ let linkLabelsRef = null
 let linkLabelBgRef = null
 
 const renderGraph = () => {
-  if (!graphSvg.value || !props.graphData) return
+  if (!graphSvg.value || !currentGraphData.value) return
   
   // 停止之前的仿真
   if (currentSimulation) {
+    cacheNodePositions(currentSimulation.nodes())
     currentSimulation.stop()
   }
   
@@ -344,21 +806,28 @@ const renderGraph = () => {
     
   svg.selectAll('*').remove()
   
-  const nodesData = props.graphData.nodes || []
-  const edgesData = props.graphData.edges || []
+  const nodesData = currentGraphData.value.nodes || []
+  const edgesData = currentGraphData.value.edges || []
   
-  if (nodesData.length === 0) return
+  if (nodesData.length === 0) {
+    linkLabelsRef = null
+    linkLabelBgRef = null
+    return
+  }
 
   // Prep data
   const nodeMap = {}
   nodesData.forEach(n => nodeMap[n.uuid] = n)
-  
-  const nodes = nodesData.map(n => ({
+
+  const nodes = nodesData.map((n, index) => ({
     id: n.uuid,
     name: n.name || 'Unnamed',
-    type: n.labels?.find(l => l !== 'Entity') || 'Entity',
-    rawData: n
+    type: n.labels?.find(l => l !== 'Entity' && l !== 'Node') || 'Entity',
+    rawData: n,
+    ...getNodeInitialPosition(n, index, nodesData.length, width, height)
   }))
+
+  pendingExpandedNodeIds = new Set()
   
   const nodeIds = new Set(nodes.map(n => n.id))
   
@@ -481,17 +950,24 @@ const renderGraph = () => {
     .force('center', d3.forceCenter(width / 2, height / 2))
     .force('collide', d3.forceCollide(50))
     // 添加向中心的引力，让独立的节点群聚集到中心区域
-    .force('x', d3.forceX(width / 2).strength(0.04))
-    .force('y', d3.forceY(height / 2).strength(0.04))
+    .force('x', d3.forceX(width / 2).strength(0.015))
+    .force('y', d3.forceY(height / 2).strength(0.015))
   
   currentSimulation = simulation
 
   const g = svg.append('g')
   
   // Zoom
-  svg.call(d3.zoom().extent([[0, 0], [width, height]]).scaleExtent([0.1, 4]).on('zoom', (event) => {
-    g.attr('transform', event.transform)
-  }))
+  zoomBehaviorRef = d3.zoom()
+    .extent([[0, 0], [width, height]])
+    .scaleExtent([0.1, 4])
+    .on('zoom', (event) => {
+      currentZoomTransform = event.transform
+      g.attr('transform', event.transform)
+    })
+
+  svg.call(zoomBehaviorRef)
+  svg.call(zoomBehaviorRef.transform, buildTransform(currentZoomTransform))
 
   // Links - 使用 path 支持曲线
   const linkGroup = g.append('g').attr('class', 'links')
@@ -561,7 +1037,7 @@ const renderGraph = () => {
     const cx = (sx + tx) / 2 + offsetX
     const cy = (sy + ty) / 2 + offsetY
     
-    // 二次贝塞尔曲线公式 B(t) = (1-t)²P0 + 2(1-t)tP1 + t²P2, t=0.5
+    // 二次贝塞尔曲线公式 B(t) = (1-t)2P0 + 2(1-t)tP1 + t2P2, t=0.5
     const midX = 0.25 * sx + 0.5 * cx + 0.25 * tx
     const midY = 0.25 * sy + 0.5 * cy + 0.25 * ty
     
@@ -577,17 +1053,11 @@ const renderGraph = () => {
     .style('cursor', 'pointer')
     .on('click', (event, d) => {
       event.stopPropagation()
-      // 重置之前选中边的样式
-      linkGroup.selectAll('path').attr('stroke', '#C0C0C0').attr('stroke-width', 1.5)
-      linkLabelBg.attr('fill', 'rgba(255,255,255,0.95)')
-      linkLabels.attr('fill', '#666')
-      // 高亮当前选中的边
-      d3.select(event.target).attr('stroke', '#3498db').attr('stroke-width', 3)
-      
       selectedItem.value = {
         type: 'edge',
         data: d.rawData
       }
+      applySelectionStyles()
     })
 
   // Link labels background (白色背景使文字更清晰)
@@ -602,17 +1072,11 @@ const renderGraph = () => {
     .style('display', showEdgeLabels.value ? 'block' : 'none')
     .on('click', (event, d) => {
       event.stopPropagation()
-      linkGroup.selectAll('path').attr('stroke', '#C0C0C0').attr('stroke-width', 1.5)
-      linkLabelBg.attr('fill', 'rgba(255,255,255,0.95)')
-      linkLabels.attr('fill', '#666')
-      // 高亮对应的边
-      link.filter(l => l === d).attr('stroke', '#3498db').attr('stroke-width', 3)
-      d3.select(event.target).attr('fill', 'rgba(52, 152, 219, 0.1)')
-      
       selectedItem.value = {
         type: 'edge',
         data: d.rawData
       }
+      applySelectionStyles()
     })
 
   // Link labels
@@ -630,17 +1094,11 @@ const renderGraph = () => {
     .style('display', showEdgeLabels.value ? 'block' : 'none')
     .on('click', (event, d) => {
       event.stopPropagation()
-      linkGroup.selectAll('path').attr('stroke', '#C0C0C0').attr('stroke-width', 1.5)
-      linkLabelBg.attr('fill', 'rgba(255,255,255,0.95)')
-      linkLabels.attr('fill', '#666')
-      // 高亮对应的边
-      link.filter(l => l === d).attr('stroke', '#3498db').attr('stroke-width', 3)
-      d3.select(event.target).attr('fill', '#3498db')
-      
       selectedItem.value = {
         type: 'edge',
         data: d.rawData
       }
+      applySelectionStyles()
     })
   
   // 保存引用供外部控制显隐
@@ -693,35 +1151,31 @@ const renderGraph = () => {
         d.fx = null
         d.fy = null
         d._isDragging = false
+        cacheNodePositions([d])
       })
     )
     .on('click', (event, d) => {
       event.stopPropagation()
-      // 重置所有节点样式
-      node.attr('stroke', '#fff').attr('stroke-width', 2.5)
-      linkGroup.selectAll('path').attr('stroke', '#C0C0C0').attr('stroke-width', 1.5)
-      // 高亮选中节点
-      d3.select(event.target).attr('stroke', '#E91E63').attr('stroke-width', 4)
-      // 高亮与此节点相连的边
-      link.filter(l => l.source.id === d.id || l.target.id === d.id)
-        .attr('stroke', '#E91E63')
-        .attr('stroke-width', 2.5)
-      
       selectedItem.value = {
         type: 'node',
         data: d.rawData,
         entityType: d.type,
         color: getColor(d.type)
       }
+      applySelectionStyles()
     })
     .on('mouseenter', (event, d) => {
-      if (!selectedItem.value || selectedItem.value.data?.uuid !== d.rawData.uuid) {
+      const isSelectedNode = selectedItem.value?.type === 'node' && selectedItem.value.data?.uuid === d.rawData.uuid
+      const isAnchorNode = expandedAnchorUuid.value === d.rawData.uuid
+      if (!isSelectedNode && !isAnchorNode) {
         d3.select(event.target).attr('stroke', '#333').attr('stroke-width', 3)
       }
     })
     .on('mouseleave', (event, d) => {
-      if (!selectedItem.value || selectedItem.value.data?.uuid !== d.rawData.uuid) {
-        d3.select(event.target).attr('stroke', '#fff').attr('stroke-width', 2.5)
+      const isSelectedNode = selectedItem.value?.type === 'node' && selectedItem.value.data?.uuid === d.rawData.uuid
+      const isAnchorNode = expandedAnchorUuid.value === d.rawData.uuid
+      if (!isSelectedNode && !isAnchorNode) {
+        applySelectionStyles()
       }
     })
 
@@ -737,6 +1191,56 @@ const renderGraph = () => {
     .attr('dy', 4)
     .style('pointer-events', 'none')
     .style('font-family', 'system-ui, sans-serif')
+
+  const applySelectionStyles = () => {
+    const selectedNodeUuid = selectedItem.value?.type === 'node' ? selectedItem.value.data?.uuid : ''
+    const selectedEdgeKey = selectedItem.value?.type === 'edge' ? buildEdgeKey(selectedItem.value.data) : ''
+    const anchorUuid = expandedAnchorUuid.value
+
+    node
+      .attr('r', d => (anchorUuid && d.id === anchorUuid ? 11.5 : 10))
+      .attr('stroke', d => {
+        if (selectedNodeUuid && d.id === selectedNodeUuid) return '#E91E63'
+        if (anchorUuid && d.id === anchorUuid) return '#F39C12'
+        return '#fff'
+      })
+      .attr('stroke-width', d => {
+        if (selectedNodeUuid && d.id === selectedNodeUuid) return 4
+        if (anchorUuid && d.id === anchorUuid) return 4
+        return 2.5
+      })
+
+    nodeLabels
+      .attr('fill', d => (anchorUuid && d.id === anchorUuid ? '#0F4C81' : '#333'))
+      .attr('font-weight', d => (anchorUuid && d.id === anchorUuid ? '700' : '500'))
+
+    link
+      .attr('stroke', d => {
+        if (selectedEdgeKey && buildEdgeKey(d.rawData) === selectedEdgeKey) return '#3498db'
+        if (selectedNodeUuid && (d.source.id === selectedNodeUuid || d.target.id === selectedNodeUuid)) return '#E91E63'
+        if (!selectedNodeUuid && anchorUuid && (d.source.id === anchorUuid || d.target.id === anchorUuid)) return '#F39C12'
+        return '#C0C0C0'
+      })
+      .attr('stroke-width', d => {
+        if (selectedEdgeKey && buildEdgeKey(d.rawData) === selectedEdgeKey) return 3
+        if (selectedNodeUuid && (d.source.id === selectedNodeUuid || d.target.id === selectedNodeUuid)) return 2.5
+        if (!selectedNodeUuid && anchorUuid && (d.source.id === anchorUuid || d.target.id === anchorUuid)) return 2.2
+        return 1.5
+      })
+
+    linkLabelBg.attr('fill', d => (
+      selectedEdgeKey && buildEdgeKey(d.rawData) === selectedEdgeKey
+        ? 'rgba(52, 152, 219, 0.1)'
+        : 'rgba(255,255,255,0.95)'
+    ))
+    linkLabels.attr('fill', d => (
+      selectedEdgeKey && buildEdgeKey(d.rawData) === selectedEdgeKey
+        ? '#3498db'
+        : '#666'
+    ))
+  }
+
+  applySelectionStyles()
 
   simulation.on('tick', () => {
     // 更新曲线路径
@@ -771,21 +1275,63 @@ const renderGraph = () => {
     nodeLabels
       .attr('x', d => d.x)
       .attr('y', d => d.y)
+
+    cacheNodePositions(nodes)
+
+    if (pendingAnchorVisibilityUuid) {
+      const anchorNode = nodes.find(item => item.id === pendingAnchorVisibilityUuid)
+      if (anchorNode) {
+        keepNodeInView(anchorNode)
+        pendingAnchorVisibilityUuid = ''
+      }
+    }
   })
   
   // 点击空白处关闭详情面板
   svg.on('click', () => {
     selectedItem.value = null
-    node.attr('stroke', '#fff').attr('stroke-width', 2.5)
-    linkGroup.selectAll('path').attr('stroke', '#C0C0C0').attr('stroke-width', 1.5)
-    linkLabelBg.attr('fill', 'rgba(255,255,255,0.95)')
-    linkLabels.attr('fill', '#666')
+    applySelectionStyles()
   })
 }
 
-watch(() => props.graphData, () => {
+watch(() => props.graphData, (newValue) => {
+  syncDisplayGraphData(newValue)
+})
+
+watch(displayGraphData, () => {
   nextTick(renderGraph)
 }, { deep: true })
+
+watch(() => props.graphId, (newGraphId) => {
+  if (!newGraphId) {
+    resetGraphViewportState({ clearAnchor: true })
+    entityOptions.value = []
+    selectedEntityUuid.value = ''
+    entitySearchInput.value = ''
+    controlMessage.value = ''
+    return
+  }
+
+  resetGraphViewportState({ clearAnchor: true })
+  loadEntityOptions()
+}, { immediate: true })
+
+watch(entitySearchInput, (newValue) => {
+  const trimmedValue = newValue.trim()
+  const selectedEntity = entityOptions.value.find(item => item.uuid === selectedEntityUuid.value)
+
+  if (selectedEntity && trimmedValue && trimmedValue !== (selectedEntity.name || selectedEntity.uuid || '')) {
+    selectedEntityUuid.value = ''
+  }
+
+  if (entitySearchTimer) {
+    clearTimeout(entitySearchTimer)
+  }
+
+  entitySearchTimer = setTimeout(() => {
+    loadEntityOptions(trimmedValue)
+  }, ENTITY_SEARCH_DEBOUNCE_MS)
+})
 
 // 监听边标签显示开关
 watch(showEdgeLabels, (newVal) => {
@@ -803,10 +1349,15 @@ const handleResize = () => {
 
 onMounted(() => {
   window.addEventListener('resize', handleResize)
+  resetGraphViewportState({ clearAnchor: true })
+  syncDisplayGraphData(props.graphData)
 })
 
 onUnmounted(() => {
   window.removeEventListener('resize', handleResize)
+  if (entitySearchTimer) {
+    clearTimeout(entitySearchTimer)
+  }
   if (currentSimulation) {
     currentSimulation.stop()
   }
@@ -829,13 +1380,20 @@ onUnmounted(() => {
   top: 0;
   left: 0;
   right: 0;
-  padding: 16px 20px;
+  padding: 16px 20px 10px;
   z-index: 10;
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   background: linear-gradient(to bottom, rgba(255,255,255,0.95), rgba(255,255,255,0));
   pointer-events: none;
+}
+
+.header-primary {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .panel-title {
@@ -845,8 +1403,58 @@ onUnmounted(() => {
   pointer-events: auto;
 }
 
-.header-tools {
+.panel-subtitle {
+  font-size: 11px;
+  color: #666;
   pointer-events: auto;
+}
+
+.header-controls {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.entity-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(224,224,224,0.9);
+  border-radius: 12px;
+  background: rgba(255,255,255,0.96);
+  box-shadow: 0 6px 18px rgba(0,0,0,0.05);
+}
+
+.entity-select,
+.entity-search-input {
+  height: 34px;
+  border: 1px solid #E0E0E0;
+  border-radius: 8px;
+  background: #FFF;
+  color: #333;
+  font-size: 12px;
+  padding: 0 10px;
+  outline: none;
+}
+
+.entity-select {
+  min-width: 210px;
+  max-width: 260px;
+}
+
+.entity-search-input {
+  width: 220px;
+}
+
+.entity-select:focus,
+.entity-search-input:focus {
+  border-color: #3498db;
+  box-shadow: 0 0 0 3px rgba(52,152,219,0.12);
+}
+
+.header-tools {
   display: flex;
   gap: 10px;
   align-items: center;
@@ -879,11 +1487,34 @@ onUnmounted(() => {
   font-size: 12px;
 }
 
+.tool-btn.compact {
+  min-width: 72px;
+}
+
+.tool-btn.ghost {
+  background: rgba(255,255,255,0.9);
+}
+
 .icon-refresh.spinning {
   animation: spin 1s linear infinite;
 }
 
 @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+.search-status {
+  position: absolute;
+  top: 82px;
+  left: 20px;
+  z-index: 10;
+  max-width: 420px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.95);
+  border: 1px solid #EAEAEA;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.04);
+  font-size: 12px;
+  color: #555;
+}
 
 .graph-container {
   width: 100%;
@@ -963,7 +1594,7 @@ onUnmounted(() => {
 /* Edge Labels Toggle - Top Right */
 .edge-labels-toggle {
   position: absolute;
-  top: 60px;
+  top: 118px;
   right: 20px;
   display: flex;
   align-items: center;
@@ -1096,6 +1727,46 @@ input:checked + .slider:before {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+}
+
+.detail-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.detail-action-btn {
+  border: 1px solid #D0D7DE;
+  background: linear-gradient(135deg, #0F4C81 0%, #2F80ED 100%);
+  color: #FFF;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.detail-action-btn:hover:not(:disabled) {
+  opacity: 0.92;
+  transform: translateY(-1px);
+}
+
+.detail-action-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.detail-action-context {
+  font-size: 11px;
+  color: #0F4C81;
+  font-weight: 600;
+}
+
+.detail-action-hint {
+  font-size: 11px;
+  color: #666;
 }
 
 .detail-label {
@@ -1420,4 +2091,69 @@ input:checked + .slider:before {
   padding: 3px 6px;
   font-size: 9px;
 }
+
+@media (max-width: 1200px) {
+  .panel-header {
+    gap: 12px;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .header-controls {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .entity-controls {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .entity-select,
+  .entity-search-input {
+    width: 100%;
+    max-width: none;
+  }
+
+  .header-tools {
+    justify-content: flex-end;
+  }
+
+  .search-status {
+    top: 126px;
+    max-width: calc(100% - 40px);
+  }
+
+  .edge-labels-toggle {
+    top: 164px;
+  }
+}
+
+@media (max-width: 768px) {
+  .panel-header {
+    padding: 14px 14px 10px;
+  }
+
+  .search-status {
+    left: 14px;
+    right: 14px;
+    max-width: none;
+  }
+
+  .graph-legend {
+    left: 14px;
+    bottom: 14px;
+    max-width: calc(100% - 28px);
+  }
+
+  .edge-labels-toggle {
+    left: 14px;
+    right: auto;
+    top: 196px;
+  }
+}
 </style>
+
+
+

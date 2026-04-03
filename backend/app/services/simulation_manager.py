@@ -14,7 +14,7 @@ from enum import Enum
 
 from ..config import Config
 from ..utils.logger import get_logger
-from .zep_entity_reader import ZepEntityReader, FilteredEntities
+from .zep_reader_factory import create_entity_reader
 from .oasis_profile_generator import OasisProfileGenerator, OasisAgentProfile
 from .simulation_config_generator import SimulationConfigGenerator, SimulationParameters
 
@@ -238,7 +238,6 @@ class SimulationManager:
     ) -> SimulationState:
         """
         准备模拟环境（全程自动化）
-        
         步骤：
         1. 从Zep图谱读取并过滤实体
         2. 为每个实体生成OASIS Agent Profile（可选LLM增强，支持并行）
@@ -270,18 +269,23 @@ class SimulationManager:
             
             # ========== 阶段1: 读取并过滤实体 ==========
             if progress_callback:
-                progress_callback("reading", 0, "正在连接Zep图谱...")
+                progress_callback("reading", 0, "正在连接图谱...")
             
-            reader = ZepEntityReader()
+            reader = create_entity_reader()
             
             if progress_callback:
                 progress_callback("reading", 30, "正在读取节点数据...")
             
-            filtered = reader.filter_defined_entities(
-                graph_id=state.graph_id,
-                defined_entity_types=defined_entity_types,
-                enrich_with_edges=True
-            )
+            try:
+                filtered = reader.filter_defined_entities(
+                    graph_id=state.graph_id,
+                    defined_entity_types=defined_entity_types,
+                    enrich_with_edges=True
+                )
+            finally:
+                close_reader = getattr(reader, "close", None)
+                if callable(close_reader):
+                    close_reader()
             
             state.entities_count = filtered.filtered_count
             state.entity_types = list(filtered.entity_types)

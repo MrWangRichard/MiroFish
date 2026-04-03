@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="main-view">
     <!-- Header -->
     <header class="app-header">
@@ -38,6 +38,7 @@
       <!-- Left Panel: Graph -->
       <div class="panel-wrapper left" :style="leftPanelStyle">
         <GraphPanel 
+          :graphId="projectData?.graph_id"
           :graphData="graphData"
           :loading="graphLoading"
           :currentPhase="currentPhase"
@@ -300,7 +301,7 @@ const fetchGraphData = async () => {
     // Refresh project info to check for graph_id
     const projRes = await getProject(currentProjectId.value)
     if (projRes.success && projRes.data.graph_id) {
-      const gRes = await getGraphData(projRes.data.graph_id)
+      const gRes = await getGraphData(projRes.data.graph_id, { limit: 100 })
       if (gRes.success) {
         graphData.value = gRes.data
         const nodeCount = gRes.data.node_count || gRes.data.nodes?.length || 0
@@ -356,9 +357,9 @@ const pollTaskStatus = async (taskId) => {
 
 const loadGraph = async (graphId) => {
   graphLoading.value = true
-  addLog(`Loading full graph data: ${graphId}`)
+  addLog(`Loading default graph view: ${graphId}`)
   try {
-    const res = await getGraphData(graphId)
+    const res = await getGraphData(graphId, { limit: 100 })
     if (res.success) {
       graphData.value = res.data
       addLog('Graph data loaded successfully.')

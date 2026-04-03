@@ -21,6 +21,7 @@ from enum import Enum
 from ..config import Config
 from ..utils.llm_client import LLMClient
 from ..utils.logger import get_logger
+from .graph_tools_factory import create_graph_tools_service
 from .zep_tools import (
     ZepToolsService, 
     SearchResult, 
@@ -903,7 +904,7 @@ class ReportAgent:
         self.simulation_requirement = simulation_requirement
         
         self.llm = llm_client or LLMClient()
-        self.zep_tools = zep_tools or ZepToolsService()
+        self.zep_tools = zep_tools or create_graph_tools_service(llm_client=self.llm)
         
         # 工具定义
         self.tools = self._define_tools()
@@ -915,6 +916,14 @@ class ReportAgent:
         
         logger.info(f"ReportAgent 初始化完成: graph_id={graph_id}, simulation_id={simulation_id}")
     
+    def close(self):
+        close_tools = getattr(self.zep_tools, "close", None)
+        if callable(close_tools):
+            close_tools()
+
+    def __del__(self):
+        self.close()
+
     def _define_tools(self) -> Dict[str, Dict[str, Any]]:
         """定义可用工具"""
         return {

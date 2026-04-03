@@ -16,10 +16,16 @@ openai>=1.0.0
 # ============= Zep Cloud =============
 zep-cloud==3.13.0
 
+# ============= LightRAG (可选，用于替代 Zep) =============
+lightrag-hku
+
+# ============= Neo4j (LightRAG 图存储后端) =============
+neo4j
+
 # ============= OASIS 社交媒体模拟 =============
 # OASIS 社交模拟框架
-camel-oasis==0.2.5
-camel-ai==0.2.78
+camel-oasis>=0.2.5
+camel-ai>=0.2.78
 
 # ============= 文件处理 =============
 PyMuPDF>=1.24.0

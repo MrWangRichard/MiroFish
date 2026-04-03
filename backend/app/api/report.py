@@ -10,6 +10,7 @@ from flask import request, jsonify, send_file
 
 from . import report_bp
 from ..config import Config
+from ..services.graph_tools_factory import create_graph_tools_service
 from ..services.report_agent import ReportAgent, ReportManager, ReportStatus
 from ..services.simulation_manager import SimulationManager
 from ..models.project import ProjectManager
@@ -952,14 +953,17 @@ def search_graph_tool():
                 "error": "请提供 graph_id 和 query"
             }), 400
         
-        from ..services.zep_tools import ZepToolsService
-        
-        tools = ZepToolsService()
-        result = tools.search_graph(
-            graph_id=graph_id,
-            query=query,
-            limit=limit
-        )
+        tools = create_graph_tools_service()
+        try:
+            result = tools.search_graph(
+                graph_id=graph_id,
+                query=query,
+                limit=limit
+            )
+        finally:
+            close_tools = getattr(tools, "close", None)
+            if callable(close_tools):
+                close_tools()
         
         return jsonify({
             "success": True,
@@ -996,10 +1000,13 @@ def get_graph_statistics_tool():
                 "error": "请提供 graph_id"
             }), 400
         
-        from ..services.zep_tools import ZepToolsService
-        
-        tools = ZepToolsService()
-        result = tools.get_graph_statistics(graph_id)
+        tools = create_graph_tools_service()
+        try:
+            result = tools.get_graph_statistics(graph_id)
+        finally:
+            close_tools = getattr(tools, "close", None)
+            if callable(close_tools):
+                close_tools()
         
         return jsonify({
             "success": True,

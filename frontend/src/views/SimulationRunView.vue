@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="main-view">
     <!-- Header -->
     <header class="app-header">
@@ -38,6 +38,7 @@
       <!-- Left Panel: Graph -->
       <div class="panel-wrapper left" :style="leftPanelStyle">
         <GraphPanel 
+          :graphId="projectData?.graph_id"
           :graphData="graphData"
           :loading="graphLoading"
           :currentPhase="3"
@@ -248,7 +249,7 @@ const loadGraph = async (graphId) => {
   }
   
   try {
-    const res = await getGraphData(graphId)
+    const res = await getGraphData(graphId, { limit: 100 })
     if (res.success) {
       graphData.value = res.data
       if (!isSimulating.value) {

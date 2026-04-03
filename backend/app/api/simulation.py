@@ -9,7 +9,7 @@ from flask import request, jsonify, send_file
 
 from . import simulation_bp
 from ..config import Config
-from ..services.zep_entity_reader import ZepEntityReader
+from ..services.zep_reader_factory import create_entity_reader, is_backend_available
 from ..services.oasis_profile_generator import OasisProfileGenerator
 from ..services.simulation_manager import SimulationManager, SimulationStatus
 from ..services.simulation_runner import SimulationRunner, RunnerStatus
@@ -42,6 +42,12 @@ def optimize_interview_prompt(prompt: str) -> str:
     return f"{INTERVIEW_PROMPT_PREFIX}{prompt}"
 
 
+def _close_resource(resource) -> None:
+    close_fn = getattr(resource, "close", None)
+    if callable(close_fn):
+        close_fn()
+
+
 # ============== 实体读取接口 ==============
 
 @simulation_bp.route('/entities/<graph_id>', methods=['GET'])
@@ -56,10 +62,10 @@ def get_graph_entities(graph_id: str):
         enrich: 是否获取相关边信息（默认true）
     """
     try:
-        if not Config.ZEP_API_KEY:
+        if not is_backend_available():
             return jsonify({
                 "success": False,
-                "error": "ZEP_API_KEY未配置"
+                "error": "图谱后端未配置或不可用"
             }), 500
         
         entity_types_str = request.args.get('entity_types', '')
@@ -68,12 +74,15 @@ def get_graph_entities(graph_id: str):
         
         logger.info(f"获取图谱实体: graph_id={graph_id}, entity_types={entity_types}, enrich={enrich}")
         
-        reader = ZepEntityReader()
-        result = reader.filter_defined_entities(
-            graph_id=graph_id,
-            defined_entity_types=entity_types,
-            enrich_with_edges=enrich
-        )
+        reader = create_entity_reader()
+        try:
+            result = reader.filter_defined_entities(
+                graph_id=graph_id,
+                defined_entity_types=entity_types,
+                enrich_with_edges=enrich
+            )
+        finally:
+            _close_resource(reader)
         
         return jsonify({
             "success": True,
@@ -93,14 +102,17 @@ def get_graph_entities(graph_id: str):
 def get_entity_detail(graph_id: str, entity_uuid: str):
     """获取单个实体的详细信息"""
     try:
-        if not Config.ZEP_API_KEY:
+        if not is_backend_available():
             return jsonify({
                 "success": False,
-                "error": "ZEP_API_KEY未配置"
+                "error": "图谱后端未配置或不可用"
             }), 500
         
-        reader = ZepEntityReader()
-        entity = reader.get_entity_with_context(graph_id, entity_uuid)
+        reader = create_entity_reader()
+        try:
+            entity = reader.get_entity_with_context(graph_id, entity_uuid)
+        finally:
+            _close_resource(reader)
         
         if not entity:
             return jsonify({
@@ -126,20 +138,23 @@ def get_entity_detail(graph_id: str, entity_uuid: str):
 def get_entities_by_type(graph_id: str, entity_type: str):
     """获取指定类型的所有实体"""
     try:
-        if not Config.ZEP_API_KEY:
+        if not is_backend_available():
             return jsonify({
                 "success": False,
-                "error": "ZEP_API_KEY未配置"
+                "error": "图谱后端未配置或不可用"
             }), 500
         
         enrich = request.args.get('enrich', 'true').lower() == 'true'
         
-        reader = ZepEntityReader()
-        entities = reader.get_entities_by_type(
-            graph_id=graph_id,
-            entity_type=entity_type,
-            enrich_with_edges=enrich
-        )
+        reader = create_entity_reader()
+        try:
+            entities = reader.get_entities_by_type(
+                graph_id=graph_id,
+                entity_type=entity_type,
+                enrich_with_edges=enrich
+            )
+        finally:
+            _close_resource(reader)
         
         return jsonify({
             "success": True,
@@ -471,13 +486,16 @@ def prepare_simulation():
         # 这样前端在调用prepare后立即就能获取到预期Agent总数
         try:
             logger.info(f"同步获取实体数量: graph_id={state.graph_id}")
-            reader = ZepEntityReader()
-            # 快速读取实体（不需要边信息，只统计数量）
-            filtered_preview = reader.filter_defined_entities(
-                graph_id=state.graph_id,
-                defined_entity_types=entity_types_list,
-                enrich_with_edges=False  # 不获取边信息，加快速度
-            )
+            reader = create_entity_reader()
+            try:
+                # 快速读取实体（不需要边信息，只统计数量）
+                filtered_preview = reader.filter_defined_entities(
+                    graph_id=state.graph_id,
+                    defined_entity_types=entity_types_list,
+                    enrich_with_edges=False  # 不获取边信息，加快速度
+                )
+            finally:
+                _close_resource(reader)
             # 保存实体数量到状态（供前端立即获取）
             state.entities_count = filtered_preview.filtered_count
             state.entity_types = list(filtered_preview.entity_types)
@@ -1396,12 +1414,15 @@ def generate_profiles():
         use_llm = data.get('use_llm', True)
         platform = data.get('platform', 'reddit')
         
-        reader = ZepEntityReader()
-        filtered = reader.filter_defined_entities(
-            graph_id=graph_id,
-            defined_entity_types=entity_types,
-            enrich_with_edges=True
-        )
+        reader = create_entity_reader()
+        try:
+            filtered = reader.filter_defined_entities(
+                graph_id=graph_id,
+                defined_entity_types=entity_types,
+                enrich_with_edges=True
+            )
+        finally:
+            _close_resource(reader)
         
         if filtered.filtered_count == 0:
             return jsonify({
